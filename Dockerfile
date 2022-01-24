@@ -13,105 +13,37 @@ ARG LIBTOOL_VERSION="2.4.6_4"
 ARG GOLANGCI_LINT_VERSION="1.43.0"
 ARG GORELEASER_VERSION="1.3.1"
 ARG GO_VERSION=""
-ARG UBUNTU=bionic
+ARG UBUNTU=20.04
 
-
-
-####################  snapbuilder ####################
-FROM ubuntu:${UBUNTU} AS snapbuilder
-ARG UBUNTU
-# We build from ubuntu because we need snapcraft. It's difficult
-# to build, say, a Debian-based image with snapcraft included. Note also that
-# the snapcore/snapcraft images are based upon ubuntu:xenial, but we
-# want ubuntu:bionic (some things we want, e.g. go1.14, don't have good
-# packages for xenial at the time of writing).
-
-# This section lifted from snapcore/snapcraft:stable
-# Grab dependencies
-RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y \
-      curl \
-      jq \
-      lsb-core \
-      squashfs-tools
-
-
-# Grab the core snap (for backwards compatibility) from the stable channel and
-# unpack it in the proper place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/core' | jq '.download_url' -r) --output core.snap
-RUN mkdir -p /snap/core
-RUN unsquashfs -d /snap/core/current core.snap
-
-# Grab the core18 snap (which snapcraft uses as a base) from the stable channel
-# and unpack it in the proper place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/core18' | jq '.download_url' -r) --output core18.snap
-RUN mkdir -p /snap/core18
-RUN unsquashfs -d /snap/core18/current core18.snap
-
-# Grab the snapcraft snap from the stable channel and unpack it in the proper
-# place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/snapcraft?channel=stable' | jq '.download_url' -r) --output snapcraft.snap
-RUN mkdir -p /snap/snapcraft
-RUN unsquashfs -d /snap/snapcraft/current snapcraft.snap
-
-# Create a snapcraft runner
-RUN mkdir -p /snap/bin
-RUN echo "#!/bin/sh" > /snap/bin/snapcraft
-RUN snap_version="$(awk '/^version:/{print $2}' /snap/snapcraft/current/meta/snap.yaml)" && echo "export SNAP_VERSION=\"$snap_version\"" >> /snap/bin/snapcraft
-RUN echo 'exec "$SNAP/usr/bin/python3" "$SNAP/bin/snapcraft" "$@"' >> /snap/bin/snapcraft
-RUN chmod +x /snap/bin/snapcraft
-
-## Multi-stage build, only need the snaps from the builder. Copy them one at a
-## time so they can be cached.
-FROM ubuntu:$UBUNTU AS snapcore
-COPY --from=snapbuilder /snap/core /snap/core
-COPY --from=snapbuilder /snap/core18 /snap/core18
-COPY --from=snapbuilder /snap/snapcraft /snap/snapcraft
-COPY --from=snapbuilder /snap/bin/snapcraft /snap/bin/snapcraft
-
-# Generate locale and install dependencies.
-RUN apt-get update && apt-get dist-upgrade --yes && apt-get install --yes snapd sudo locales && locale-gen en_US.UTF-8
-
-# Set the proper environment.
-ENV LANG="en_US.UTF-8"
-ENV LANGUAGE="en_US:en"
-ENV LC_ALL="en_US.UTF-8"
-ENV PATH="/snap/bin:$PATH"
-ENV SNAP="/snap/snapcraft/current"
-ENV SNAP_NAME="snapcraft"
-ENV SNAP_ARCH="amd64"
 
 ####################  golangcore  ####################
-FROM snapcore AS golangcore
+FROM ubuntu:${UBUNTU} AS golangcore
 ARG GO_VERSION
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    git \
-    jq \
-    lsb-core \
-    software-properties-common
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl
 
 ENV GOPATH="/go"
+ENV PATH="/usr/local/go/bin:$PATH"
 RUN mkdir -p "${GOPATH}/src"
 
-# As suggested here: https://github.com/golang/go/wiki/Ubuntu
-RUN add-apt-repository -y ppa:longsleep/golang-backports
-RUN if test -z "${GO_VERSION}"; then GO_VERSION=$(curl 'https://go.dev/VERSION?m=text'); fi && \
-	curl -L -o go.tar.gz https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz && \
-	rm -rf /usr/local/go && tar -C /usr/local -xzf go.tar.gz && \
-	rm go.tar.gz
-RUN ln -s /usr/local/go /usr/lib/go
-RUN ln -s /usr/local/go/bin/go /usr/bin/go
-RUN ln -s /usr/local/go/bin/gofmt /usr/bin/gofmt
+RUN if test -z "${GO_VERSION}"; then GO_VERSION=$(curl 'https://go.dev/VERSION?m=text'); fi \
+	&& curl -L -o go.tar.gz https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz \
+	&& rm -rf /usr/local/go \
+	&& tar -C /usr/local -xzf go.tar.gz
 
 RUN go version
 
 
 ####################  devtools  ####################
-FROM golangcore AS devtools
+FROM ubuntu:${UBUNTU} AS devtools
 # Dependencies for https://github.com/tpoechtrager/osxcross and some
 # other stuff.
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+COPY --from=golangcore /usr/local/go /usr/local/go
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    docker.io \
+    snapcraft \
     build-essential \
     clang \
     cmake \
@@ -132,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sqlite3 \
     tree \
     vim \
+    git \
     wget \
     xz-utils \
     zlib1g-dev  \
@@ -179,37 +112,12 @@ RUN NAME=libtool VERSION=${LIBTOOL_VERSION} && curl \
 		--strip-components=2 \
 		"libtool/${LIBTOOL_VERSION}/include/" \
 		"libtool/${LIBTOOL_VERSION}/lib/"
-#RUN curl -fsSL "${LIBTOOL_BASEURL}/libtool-${LIBTOOL_VERSION}.${OSX_CODENAME}.bottle.tar.gz" \
-#	| gzip -dc | tar xf - \
-#		-C "${OSX_CROSS_PATH}/target/SDK/${OSX_SDK}/usr/" \
-#		--strip-components=2 \
-#		"libtool/${LIBTOOL_VERSION}/include/" \
-#		"libtool/${LIBTOOL_VERSION}/lib/"
 
 WORKDIR /root
 
 
-
-####################  docker  ####################
-FROM osx-cross AS docker
-RUN apt-get update -y && apt-get install -y --no-install-recommends \
-    apt-transport-https \
-    ca-certificates \
-    gnupg-agent
-
-
-RUN curl -fsSL "https://download.docker.com/linux/ubuntu/gpg" | apt-key add - && \
-   add-apt-repository \
-   "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
-   $(lsb_release -cs) \
-   stable"
-
-RUN apt-get update && apt-get install -y docker-ce docker-ce-cli
-
-
-
 ####################  gotools  ####################
-FROM docker AS gotools
+FROM osx-cross AS gotools
 # This section descended from https://github.com/mailchain/goreleaser-xcgo
 # Much gratitude to the mailchain team.
 ARG GORELEASER_VERSION
@@ -232,7 +140,7 @@ RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/i
 ####################  xcgo-final  ####################
 FROM gotools AS xcgo-final
 LABEL maintainer="neilotoole@apache.org"
-ENV PATH=${OSX_CROSS_PATH}/target/bin:$PATH:${GOPATH}/bin
+ENV PATH=${OSX_CROSS_PATH}/target/bin:/usr/local/go/bin:$PATH:${GOPATH}/bin
 ENV CGO_ENABLED=1
 
 WORKDIR /root
