@@ -2,17 +2,17 @@
 # cross-compiling image It can build CGo apps on macOS, Linux, and Windows.
 # It also contains supporting tools such as docker and snapcraft.
 # See https://github.com/neilotoole/xcgo
-ARG OSX_SDK="MacOSX10.15.sdk"
-ARG OSX_CODENAME="catalina"
+ARG OSX_SDK="MacOSX11.3.sdk"
+ARG OSX_CODENAME="big_sur"
 ARG OSX_VERSION_MIN="10.10"
-ARG OSX_SDK_BASEURL="https://github.com/neilotoole/xcgo/releases/download/v0.1"
-ARG OSX_SDK_SUM="d97054a0aaf60cb8e9224ec524315904f0309fbbbac763eb7736bdfbdad6efc8"
-ARG OSX_CROSS_COMMIT="de6ec57895713a090fee05cbc58e43b5d916ba33"
-ARG LIBTOOL_VERSION="2.4.6_1"
-ARG LIBTOOL_BASEURL="https://github.com/neilotoole/xcgo/releases/download/v0.1"
-ARG GOLANGCI_LINT_VERSION="1.42.1"
-ARG GORELEASER_VERSION="0.182.1"
-ARG GO_VERSION="1.17"
+#ARG OSX_SDK_BASEURL="https://github.com/neilotoole/xcgo/releases/download/v0.1"
+ARG OSX_SDK_BASEURL="https://github.com/phracker/MacOSX-SDKs/releases/download/11.3"
+ARG OSX_SDK_SUM="cd4f08a75577145b8f05245a2975f7c81401d75e9535dcffbb879ee1deefcbf4"
+ARG OSX_CROSS_COMMIT="be2b79f444aa0b43b8695a4fb7b920bf49ecc01c"
+ARG LIBTOOL_VERSION="2.4.6_4"
+ARG GOLANGCI_LINT_VERSION="1.43.0"
+ARG GORELEASER_VERSION="1.3.1"
+ARG GO_VERSION=""
 ARG UBUNTU=bionic
 
 
@@ -95,7 +95,8 @@ RUN mkdir -p "${GOPATH}/src"
 
 # As suggested here: https://github.com/golang/go/wiki/Ubuntu
 RUN add-apt-repository -y ppa:longsleep/golang-backports
-RUN curl -L -o go.tar.gz https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz && \
+RUN if test -z "${GO_VERSION}"; then GO_VERSION=$(curl 'https://go.dev/VERSION?m=text'); fi && \
+	curl -L -o go.tar.gz https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz && \
 	rm -rf /usr/local/go && tar -C /usr/local -xzf go.tar.gz && \
 	rm go.tar.gz
 RUN ln -s /usr/local/go /usr/lib/go
@@ -148,7 +149,6 @@ ARG OSX_SDK_SUM
 ARG OSX_CROSS_COMMIT
 ARG OSX_VERSION_MIN
 ARG LIBTOOL_VERSION
-ARG LIBTOOL_BASEURL
 ENV OSX_CROSS_PATH=/osxcross
 
 WORKDIR "${OSX_CROSS_PATH}"
@@ -162,12 +162,29 @@ RUN echo "${OSX_SDK_SUM}"  "${OSX_CROSS_PATH}/tarballs/${OSX_SDK}.tar.xz" | sha2
 RUN UNATTENDED=yes OSX_VERSION_MIN=${OSX_VERSION_MIN} ./build.sh
 
 RUN mkdir -p "${OSX_CROSS_PATH}/target/SDK/${OSX_SDK}/usr/"
-RUN curl -fsSL "${LIBTOOL_BASEURL}/libtool-${LIBTOOL_VERSION}.${OSX_CODENAME}.bottle.tar.gz" \
-	| gzip -dc | tar xf - \
+
+# Download libtool bottle from homebrew.
+RUN NAME=libtool VERSION=${LIBTOOL_VERSION} && curl \
+	-L -H 'Authorization: Bearer QQ==' \
+	-XGET "https://ghcr.io/v2/homebrew/core/${NAME}/blobs/sha256:$( \
+		curl \
+			-H 'Accept: application/vnd.oci.image.index.v1+json' \
+			-H 'Authorization: Bearer QQ==' -XGET https://ghcr.io/v2/homebrew/core/${NAME}/manifests/${VERSION} \
+				| jq -r '.manifests'\
+'					|.[]'\
+'					| select(.annotations."org.opencontainers.image.ref.name" == "'"${VERSION}.${OSX_CODENAME}"'")'\
+'					| .annotations."sh.brew.bottle.digest"' \
+	)" | gzip -dc | tar xf - \
 		-C "${OSX_CROSS_PATH}/target/SDK/${OSX_SDK}/usr/" \
 		--strip-components=2 \
 		"libtool/${LIBTOOL_VERSION}/include/" \
 		"libtool/${LIBTOOL_VERSION}/lib/"
+#RUN curl -fsSL "${LIBTOOL_BASEURL}/libtool-${LIBTOOL_VERSION}.${OSX_CODENAME}.bottle.tar.gz" \
+#	| gzip -dc | tar xf - \
+#		-C "${OSX_CROSS_PATH}/target/SDK/${OSX_SDK}/usr/" \
+#		--strip-components=2 \
+#		"libtool/${LIBTOOL_VERSION}/include/" \
+#		"libtool/${LIBTOOL_VERSION}/lib/"
 
 WORKDIR /root
 
